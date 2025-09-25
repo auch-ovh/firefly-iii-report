@@ -1,5 +1,6 @@
 #!/usr/local/bin/python3.7
 
+import os
 import yaml
 import sys
 import traceback
@@ -14,17 +15,118 @@ from email.message import EmailMessage
 from email.headerregistry import Address
 from email.utils import make_msgid
 
+def parse_bool(val, default=False):
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+def env_or(cfg, env_name, cfg_path=None, default=None):
+    v = os.environ.get(env_name)
+    if v is not None:
+        return v
+    # cfg_path is a list of keys to lookup in cfg dict if provided
+    if cfg is not None and cfg_path:
+        cur = cfg
+        try:
+            for k in cfg_path:
+                cur = cur[k]
+            return cur
+        except Exception:
+            return default
+    return default
+
+def load_configuration():
+    # Attempt to load config.yaml if present for fallback
+    cfg = None
+    if os.path.exists("config.yaml"):
+        try:
+            with open("config.yaml", "r") as f:
+                cfg = yaml.safe_load(f) or {}
+        except Exception:
+            traceback.print_exc()
+            print("WARNING: failed to parse config.yaml; continuing with environment variables only")
+
+    # Build configuration using environment variables first, then config file fallback
+    config = {}
+
+    # Firefly / API
+    config['firefly-url'] = env_or(cfg, "FIREFLY_URL", ['firefly-url'], None)
+    config['accesstoken'] = env_or(cfg, "ACCESSTOKEN", ['accesstoken'], None)
+    config['currency'] = env_or(cfg, "CURRENCY", ['currency'], None)
+    config['currencySymbol'] = env_or(cfg, "CURRENCYSYMBOL", ['currencySymbol'], None)
+
+    # Email
+    email_from = env_or(cfg, "EMAIL_FROM", ['email','from'], None)
+    email_to = env_or(cfg, "EMAIL_TO", ['email','to'], None)
+
+    # Normalize recipients: environment variable may be comma-separated string
+    if isinstance(email_to, str):
+        to_list = [e.strip() for e in email_to.split(",") if e.strip()]
+    elif isinstance(email_to, list):
+        to_list = email_to
+    elif isinstance(email_to, tuple):
+        to_list = list(email_to)
+    else:
+        to_list = []
+
+    config['email'] = {'from': email_from, 'to': to_list}
+
+    # SMTP
+    smtp_server = env_or(cfg, "SMTP_SERVER", ['smtp','server'], None)
+    smtp_port = env_or(cfg, "SMTP_PORT", ['smtp','port'], None)
+    smtp_starttls = env_or(cfg, "SMTP_STARTTLS", ['smtp','starttls'], None)
+    smtp_auth = env_or(cfg, "SMTP_AUTHENTICATION", ['smtp','authentication'], None)
+    smtp_user = env_or(cfg, "SMTP_USER", ['smtp','user'], None)
+    smtp_password = env_or(cfg, "SMTP_PASSWORD", ['smtp','password'], None)
+
+    # Normalize types
+    try:
+        smtp_port = int(smtp_port) if smtp_port is not None else None
+    except Exception:
+        smtp_port = None
+
+    smtp_starttls = parse_bool(smtp_starttls, default=True)
+    smtp_auth = parse_bool(smtp_auth, default=True)
+
+    config['smtp'] = {
+        'server': smtp_server,
+        'port': smtp_port,
+        'starttls': smtp_starttls,
+        'authentication': smtp_auth,
+        'user': smtp_user,
+        'password': smtp_password,
+    }
+
+    # Validate required bits
+    missing = []
+    if not config.get('firefly-url'):
+        missing.append("FIREFLY_URL or firefly-url in config.yaml")
+    if not config.get('accesstoken'):
+        missing.append("ACCESSTOKEN or accesstoken in config.yaml")
+    if not config['smtp'].get('server'):
+        missing.append("SMTP_SERVER or smtp.server in config.yaml")
+    if not config['smtp'].get('port'):
+        missing.append("SMTP_PORT or smtp.port in config.yaml")
+    if not config['email'].get('from'):
+        missing.append("EMAIL_FROM or email.from in config.yaml")
+    if not config['email'].get('to'):
+        missing.append("EMAIL_TO or email.to in config.yaml")
+
+    if missing:
+        print("ERROR: missing configuration values:")
+        for m in missing:
+            print("  -", m)
+        sys.exit(1)
+
+    return config
 
 def main():
     #
-    # Load configuration
-    with open('config.yaml', 'r') as configFile:
-        try:
-            config = yaml.safe_load(configFile)
-        except:
-            traceback.print_exc()
-            print("ERROR: could not load config.yaml")
-            sys.exit(1)
+    # Load configuration (prefer environment variables)
+    config = load_configuration()
+
     #
     # Determine the applicable date range: the previous month
     today = datetime.date.today()
@@ -345,7 +447,7 @@ def main():
         msg = EmailMessage()
         msg['Subject'] = "Firefly III: Monthly report"
         msg['From'] = "monthly-report <" + config['email']['from'] + ">"
-        msg['To'] = (tuple(config['email']['to']))
+        msg['To'] = ", ".join(config['email']['to'])
         htmlBody = """
         <html lang="en">
         <head>

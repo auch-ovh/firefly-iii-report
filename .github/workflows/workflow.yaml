@@ -16,9 +16,13 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  print-env-and-check-yaml:
-    timeout-minutes: 60
-    runs-on: self-hosted
+  init:
+    uses: PhilippAuch/workflows/.github/workflows/init.yaml@main
 
-    steps:
-      - run: env
+  build:
+    uses: PhilippAuch/workflows/.github/workflows/buildDocker.yaml@main
+    permissions:
+      packages: write
+      contents: read
+    with:
+      branch-name: '${{ inputs.branch-name }}'
